@@ -1,0 +1,2005 @@
+---
+title: "The 2017 Rice Subsidy Policy"
+author: "JANNISAH PALO"
+format: pdf
+editor: visual
+warning: FALSE
+---
+
+## BEFORE DiD
+
+### Dataset
+
+```{r}
+library(dplyr)
+library(readr)
+
+# -------------------------
+# LOAD FILES
+# -------------------------
+
+hh14 <- read_csv("APIS PUF 2014 Household.CSV")
+person14 <- read_csv("APIS PUF 2014 Person.CSV")
+
+hh16 <- read_csv("APIS PUF 2016 Household.CSV")
+person16 <- read_csv("APIS PUF 2016 Person.CSV")
+
+hh17 <- read_csv("APIS PUF 2017 Household.CSV")
+person17 <- read_csv("APIS PUF 2017 Person.CSV")
+```
+
+---- 2014 ----
+
+```{r}
+person14_hh <- person14 %>%
+  group_by(ID) %>%
+  summarise(fourps = as.integer(any(PPS01 == 1, na.rm = TRUE)), .groups = "drop")
+
+hh_2014 <- hh14 %>%
+  left_join(person14_hh, by = "ID") %>%
+  mutate(
+    fourps = ifelse(is.na(fourps), 0, fourps)
+  ) %>%
+  rename(PUFEQ6G = PUFFQ6G) %>%
+  rename(PUFEQ5 = PUFFQ5) %>%
+  filter(REGN == 10) 
+```
+
+---- 2016 ----
+
+```{r}
+person16_hh <- person16 %>%
+  group_by(ID) %>%
+  summarise(fourps = as.integer(any(PPS01 == 1, na.rm = TRUE)), .groups = "drop")
+
+hh_2016 <- hh16 %>%
+  left_join(person16_hh, by = "ID") %>%
+  mutate(
+    fourps = ifelse(is.na(fourps), 0, fourps),
+    post = 0
+  ) %>%
+  filter(REGN == 10)
+```
+
+---- 2017 ----
+
+```{r}
+person17_hh <- person17 %>%
+  group_by(ID) %>%
+  summarise(fourps = as.integer(any(PPS01 == 1, na.rm = TRUE)), .groups = "drop")
+
+hh_2017 <- hh17 %>%
+  left_join(person17_hh, by = "ID") %>%
+  mutate(
+    fourps = ifelse(is.na(fourps), 0, fourps),
+    post = 1
+  ) %>%
+  rename(REGN = REGO) %>%
+  filter(REGN == 10)
+```
+
+### Stack
+
+---- STACK ----
+
+```{r}
+hh_2014$year <- 2014
+hh_2016$year <- 2016
+hh_2017$year <- 2017
+
+hh_2014 <- hh_2014 %>% mutate(across(everything(), as.character))
+hh_2016 <- hh_2016 %>% mutate(across(everything(), as.character))
+hh_2017 <- hh_2017 %>% mutate(across(everything(), as.character))
+
+combined <- bind_rows(hh_2014, hh_2016, hh_2017)
+```
+
+```{r}
+combined <- subset(combined, REGN == 10)
+
+library(dplyr)
+
+combined <- combined %>%
+  filter(REGN == 10)
+
+with(combined, table(fourps, post))
+```
+
+### Prepare variables
+
+```{r}
+combined <- combined %>%
+  mutate(
+    fourps = as.numeric(fourps),
+    post = as.numeric(post),
+    FOOD = as.numeric(FOOD),
+    year = as.numeric(year),
+    REGN = as.factor(REGN),
+    RFACT = as.numeric(RFACT),
+    FSIZE = as.numeric(FSIZE),
+    PUFEQ5 = as.numeric(PUFEQ5),
+    PUFEQ6G = as.numeric(PUFEQ6G),
+    TOINC = as.numeric(TOINC),
+    PUFH04_SEX = as.numeric(PUFH04_SEX),
+    PUFH05_AGE = as.numeric(PUFH05_AGE)
+  )
+```
+
+### Use only 2016 and 2017 for the DiD model
+
+```{r}
+did_data <- combined %>%
+  filter(year %in% c(2016, 2017)) %>%
+  filter(!is.na(FOOD), !is.na(fourps), !is.na(post), !is.na(year), !is.na(REGN), !is.na(RFACT), !is.na(FSIZE), !is.na(PUFEQ5), !is.na(PUFEQ6G), !is.na(TOINC), !is.na(PUFH04_SEX), !is.na(PUFH05_AGE))
+
+with(did_data, table(fourps, post))
+```
+
+## DiD MODELS
+
+### Basic DiD
+
+```{r}
+did_model <- lm(FOOD ~ fourps * post, data = did_data)
+summary(did_model)
+```
+
+### DiD with covariates & survey weights (Final Model)
+
+```{r}
+did_model_w <- lm(
+  FOOD ~ fourps * post + FSIZE + log(TOINC) + PUFEQ6G ,
+  data = did_data,
+  weights = RFACT
+)
+summary(did_model_w)
+```
+
+## DiD GRAPH
+
+### Weighted group means
+
+```{r}
+trend_dataa <- combined %>%
+  filter(year %in% c(2016, 2017)) %>%
+  filter(!is.na(FOOD), !is.na(fourps), !is.na(RFACT)) %>%
+  group_by(year, fourps) %>%
+  summarise(
+    mean_food = weighted.mean(FOOD, w = RFACT, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+trend_dataa$mean_food
+```
+
+```{r}
+library(dplyr)
+
+# Extract values
+treat_2016 <- trend_dataa %>%
+  filter(year == 2016, fourps == 1) %>%
+  pull(mean_food)
+
+control_2016 <- trend_dataa %>%
+  filter(year == 2016, fourps == 0) %>%
+  pull(mean_food)
+
+control_2017 <- trend_dataa %>%
+  filter(year == 2017, fourps == 0) %>%
+  pull(mean_food)
+
+# Control group change
+control_change <- control_2017 - control_2016
+
+# Counterfactual for treated
+cf_2017 <- treat_2016 + control_change
+
+counterfactual <- data.frame(
+  year = c(2016, 2017),
+  mean_food = c(treat_2016, cf_2017)
+)
+```
+
+### Plot
+
+```{r}
+treat_2017 <- trend_dataa %>%
+  filter(year == 2017, fourps == 1) %>%
+  pull(mean_food)
+
+trend_dataa$mean_food
+```
+
+```{r}
+library(ggplot2)
+
+ggplot(trend_dataa,
+       aes(x = year, y = mean_food,
+           color = factor(fourps),
+           group = factor(fourps))) +
+
+  geom_line() +
+  geom_point() +
+
+  geom_line(data = counterfactual,
+            aes(x = year, y = mean_food),
+            linetype = "dashed",
+            color = "black",
+            inherit.aes = FALSE) +
+  
+  geom_segment(
+    aes(x = 2017, xend = 2017,
+        y = cf_2017, yend = treat_2017),
+    color = "#FF69B4",
+    inherit.aes = FALSE
+  ) +
+  
+  scale_x_continuous(breaks = c(2016, 2017)) +
+
+  labs(
+    x = "Year",
+    y = "Weighted Mean Food Expenditure",
+    color = "Group",
+    title = "Food Expenditure Trends of 4Ps and Non-4Ps Households"
+  ) +
+  scale_color_discrete(labels = c("Non-4Ps", "4Ps")) +
+theme_minimal() +
+  
+ 
+  theme(
+    plot.title = element_text(size = 16, face = "bold"), 
+    axis.title = element_text(size = 14),                
+    axis.text = element_text(size = 12),                 
+    legend.title = element_text(size = 13),              
+    legend.text = element_text(size = 12)                
+  )
+```
+
+```{r}
+ggplot(trend_dataa,
+       aes(x = year, y = mean_food,
+           color = factor(fourps),
+           group = factor(fourps))) +
+  
+  # Main lines - thicker
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 3.5, shape = 21, 
+             fill = "white", stroke = 1.5) +
+  
+  # Counterfactual dashed line
+  geom_line(data = counterfactual,
+            aes(x = year, y = mean_food),
+            linetype = "dashed",
+            color = "black",
+            linewidth = 1,
+            inherit.aes = FALSE) +
+  
+  # DiD gap segment
+  geom_segment(
+    aes(x = 2017, xend = 2017,
+        y = cf_2017, yend = treat_2017),
+    color = "black",
+    linewidth = 0.8,
+    linetype = "solid",
+    arrow = arrow(ends = "both",        
+                  length = unit(0.2, "cm")),
+    inherit.aes = FALSE
+  ) +
+  
+  # DiD label on the gap
+  annotate("text",
+           x = 2017.05,
+           y = (cf_2017 + treat_2017) / 2,
+           label = "DiD = ₱2,753",
+           hjust = 0,
+           size = 4.5,            
+           color = "black") +
+  
+  # Counterfactual label
+  annotate("text",
+           x = 2016.5,
+           y = cf_2017 - 500,
+           label = "Counterfactual",
+           hjust = 0,
+           size = 4,              
+           color = "black",
+           fontface = "italic") +
+  
+  # Colors
+  scale_color_manual(
+    values = c("0" = "#E07B6A",    
+               "1" = "#5B9BD5"),   
+    labels = c("Non-4Ps", "4Ps")
+  ) +
+  
+  # Axis
+  scale_x_continuous(
+    breaks = c(2016, 2017),
+    labels = c("2016\n(Pre)", "2017\n(Post)")
+  ) +
+  
+  scale_y_continuous(
+    labels = scales::comma_format(
+      prefix = "₱"
+    )
+  ) +
+  
+  # Labels
+  labs(
+    x = "Survey Year",
+    y = "Weighted Mean Food Expenditure (₱)",
+    color = "Household Group",
+    title = "Difference-in-Differences: Food Expenditure Trends",
+    subtitle = "4Ps and Non-4Ps Households, Region X (2016–2017)",
+    caption = "Note: Dashed line represents counterfactual trend for 4Ps households.\nSource: APIS 2016 and 2017, Philippine Statistics Authority."
+  ) +
+  
+  # Theme
+  theme_classic() +
+  theme(
+    # Title & Captions
+    plot.title = element_text(face = "bold", 
+                              size = 16,          
+                              hjust = 0),
+    plot.subtitle = element_text(size = 12,       
+                                 color = "gray40",
+                                 hjust = 0),
+    plot.caption = element_text(size = 9,        
+                                color = "gray50",
+                                hjust = 0),
+    
+    # Axes
+    axis.title = element_text(size = 13,          
+                              face = "bold"),
+    axis.text = element_text(size = 11),          
+    axis.line = element_line(color = "black",
+                             linewidth = 0.5),
+    
+    # Legend
+    legend.position = "right",
+    legend.title = element_text(face = "bold",
+                                size = 12),       
+    legend.text = element_text(size = 11),       
+    legend.background = element_rect(
+      fill = "white", color = "gray80"
+    ),
+    
+    # Grid
+    panel.grid.major.y = element_line(
+      color = "gray90", linewidth = 0.5
+    ),
+    panel.grid.major.x = element_blank(),
+    
+    # Margins
+    plot.margin = margin(15, 15, 15, 15)
+  )
+
+# Save high resolution for thesis
+ggsave("did_plot.png", 
+       width = 7, height = 5, 
+       dpi = 300,
+       bg = "white")
+```
+
+## DiD GRAPH
+
+```{r}
+trend_data <- combined %>%
+  filter(year %in% c(2014, 2016, 2017)) %>%
+  filter(!is.na(FOOD), !is.na(fourps), !is.na(RFACT)) %>%
+  group_by(year, fourps) %>%
+  summarise(
+    mean_food = weighted.mean(FOOD, w = RFACT, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+trend_data$mean_food
+```
+
+```{r}
+library(dplyr)
+
+# Extract values
+treat_2016 <- trend_data %>%
+  filter(year == 2016, fourps == 1) %>%
+  pull(mean_food)
+
+control_2016 <- trend_data %>%
+  filter(year == 2016, fourps == 0) %>%
+  pull(mean_food)
+
+control_2017 <- trend_data %>%
+  filter(year == 2017, fourps == 0) %>%
+  pull(mean_food)
+
+# Control group change
+control_change <- control_2017 - control_2016
+
+# Counterfactual for treated
+cf_2017 <- treat_2016 + control_change
+
+counterfactual <- data.frame(
+  year = c(2016, 2017),
+  mean_food = c(treat_2016, cf_2017)
+)
+```
+
+```{r}
+ggplot(trend_data,
+       aes(x = year, y = mean_food,
+           color = factor(fourps),
+           group = factor(fourps))) +
+
+  geom_line() +
+  geom_point() +
+
+  geom_line(data = counterfactual,
+            aes(x = year, y = mean_food),
+            linetype = "dashed",
+            color = "black",
+            inherit.aes = FALSE) +
+  
+  geom_segment(
+    aes(x = 2017, xend = 2017,
+        y = cf_2017, yend = treat_2017),
+    color = "#FF69B4",
+    inherit.aes = FALSE
+  ) +
+
+  labs(
+    x = "Year",
+    y = "Weighted Mean Food Expenditure",
+    color = "Group",
+    title = "Food Expenditure Trends of 4Ps and Non-4Ps Households"
+  ) +
+  scale_color_discrete(labels = c("Non-4Ps", "4Ps")) +
+  
+  theme_minimal() +
+  
+ 
+  theme(
+    plot.title = element_text(size = 16, face = "bold"), 
+    axis.title = element_text(size = 14, face = "bold"), 
+    axis.text = element_text(size = 12),                 
+    legend.title = element_text(size = 13, face = "bold"),
+    legend.text = element_text(size = 12)                
+  )
+```
+
+```{r}
+hh11 <- suppressMessages(read_csv("APIS PUF 2011 Household.CSV"))
+person11 <- read_csv("APIS PUF 2011 Person.CSV")
+
+#2011
+person11_hhh <- person11 %>%
+  rename(ID = PHHNUM) %>%
+  rename(PPS01 = PPS04) %>%
+  group_by(ID) %>%
+  summarise(fourps = as.integer(any(PPS01 == 1, na.rm = TRUE)), .groups = "drop")
+
+hhh_2011 <- hh11 %>%
+  rename(ID = PHHNUM) %>%
+  left_join(person11_hhh, by = "ID") %>%
+  mutate(
+    fourps = ifelse(is.na(fourps), 0, fourps),
+    year = 2011
+  ) %>%
+  rename(REGN = PREG) %>%
+  rename(FSIZE = PUFSIZE) %>%
+  rename(RFACT = HHWGT) %>%
+  rename(PUFEQ5 = PUFFQ5) %>%
+  rename(PUFEQ6G = PUFFQ6G) %>%
+  rename(FOOD = PUFFOOD) %>%
+  rename(TOINC = PUFTOTINC) %>%
+  rename(PUFH12_HGC = PUFH14_HGC) %>%
+  filter(REGN == 10)
+
+hh13 <- read_csv("APIS PUF 2013 Household.CSV")
+person13 <- read_csv("APIS PUF 2013 Person.CSV")
+
+#2013
+person13_hhh <- person13 %>%
+  rename(ID = SEQ) %>%
+  group_by(ID) %>%
+  summarise(fourps = as.integer(any(PPS01 == 1, na.rm = TRUE)), .groups = "drop")
+
+hhh_2013 <- hh13 %>%
+  rename(ID = SEQ) %>%
+  left_join(person13_hhh, by = "ID") %>%
+  mutate(
+    fourps = ifelse(is.na(fourps), 0, fourps),
+    year = 2013
+  ) %>%
+  rename(REGN = REGION) %>%
+  rename(FOOD = T_FOOD) %>%
+  rename(PUFH12_HGC = PUFH14_HGC) %>%
+  filter(REGN == 10)
+
+#2014
+person14_hhh <- person14 %>%
+  group_by(ID) %>%
+  summarise(fourps = as.integer(any(PPS01 == 1, na.rm = TRUE)), .groups = "drop")
+
+hhh_2014 <- hh14 %>%
+  left_join(person14_hhh, by = "ID") %>%
+  mutate(
+    fourps = ifelse(is.na(fourps), 0, fourps),
+    year = 2014
+  ) %>%
+  rename(PUFEQ6G = PUFFQ6G) %>%
+  rename(PUFEQ5 = PUFFQ5) %>%
+  filter(REGN == 10) 
+
+#2016
+person16_hhh <- person16 %>%
+  group_by(ID) %>%
+  summarise(fourps = as.integer(any(PPS01 == 1, na.rm = TRUE)), .groups = "drop")
+
+hhh_2016 <- hh16 %>%
+  left_join(person16_hhh, by = "ID") %>%
+  mutate(
+    fourps = ifelse(is.na(fourps), 0, fourps),
+    post = 0,
+    year = 2016
+  ) %>%
+  filter(REGN == 10)
+
+#2017
+person17_hhh <- person17 %>%
+  group_by(ID) %>%
+  summarise(fourps = as.integer(any(PPS01 == 1, na.rm = TRUE)), .groups = "drop")
+
+hhh_2017 <- hh17 %>%
+  left_join(person17_hhh, by = "ID") %>%
+  mutate(
+    fourps = ifelse(is.na(fourps), 0, fourps),
+    post = 1,
+    year = 2017
+  ) %>%
+  rename(REGN = REGO) %>%
+  filter(REGN == 10)
+
+hhh_2011$year <- 2011
+hhh_2013$year <- 2013
+hhh_2014$year <- 2014
+hhh_2016$year <- 2016
+hhh_2017$year <- 2017
+
+hhh_2011 <- hhh_2011 %>% mutate(across(everything(), as.character))
+hhh_2013 <- hhh_2013 %>% mutate(across(everything(), as.character))
+hhh_2014 <- hhh_2014 %>% mutate(across(everything(), as.character))
+hhh_2016 <- hhh_2016 %>% mutate(across(everything(), as.character))
+hhh_2017 <- hhh_2017 %>% mutate(across(everything(), as.character))
+
+combined5 <- bind_rows(hhh_2011, hhh_2013, hhh_2014, hhh_2016, hhh_2017)
+
+combined5 <- subset(combined5, REGN == 10)
+library(dplyr)
+combined5 <- combined5 %>%
+  filter(REGN == 10)
+with(combined5, table(fourps, post))
+
+combined5 <- combined5 %>%
+  mutate(
+    fourps = as.numeric(fourps),
+    post = as.numeric(post),
+    FOOD = as.numeric(FOOD),
+    year = as.numeric(year),
+    REGN = as.factor(REGN),
+    RFACT = as.numeric(RFACT),
+    FSIZE = as.numeric(FSIZE),
+    PUFEQ5 = as.numeric(PUFEQ5),
+    PUFEQ6G = as.numeric(PUFEQ6G),
+    TOINC = as.numeric(TOINC),
+    PUFH04_SEX = as.numeric(PUFH04_SEX),
+    PUFH05_AGE = as.numeric(PUFH05_AGE)
+  )
+```
+
+```{r, echo=FALSE}
+library(ggplot2)
+library(dplyr)
+library(scales)
+
+# First make sure trend_data includes all years
+trend_data <- combined5 %>%
+  filter(year %in% c(2011, 2013, 2014, 2016, 2017)) %>%
+  filter(!is.na(FOOD), !is.na(fourps), !is.na(RFACT)) %>%
+  group_by(year, fourps) %>%
+  summarise(
+    mean_food = weighted.mean(FOOD, w = RFACT, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Counterfactual
+treat_2016  <- trend_data %>% 
+  filter(year == 2016, fourps == 1) %>% pull(mean_food)
+control_2016 <- trend_data %>% 
+  filter(year == 2016, fourps == 0) %>% pull(mean_food)
+control_2017 <- trend_data %>% 
+  filter(year == 2017, fourps == 0) %>% pull(mean_food)
+treat_2017  <- trend_data %>% 
+  filter(year == 2017, fourps == 1) %>% pull(mean_food)
+
+control_change <- control_2017 - control_2016
+cf_2017 <- treat_2016 + control_change
+
+counterfactual <- data.frame(
+  year     = c(2016, 2017),
+  mean_food = c(treat_2016, cf_2017)
+)
+
+# Plot
+ggplot(trend_data,
+       aes(x = year, y = mean_food,
+           color = factor(fourps),
+           group = factor(fourps))) +
+  
+  # Vertical intervention line
+  geom_vline(xintercept = 2016.5,
+             linetype = "dotted",
+             color = "gray40",
+             linewidth = 0.8) +
+  
+  # Pre/Post shading
+  annotate("rect",
+           xmin = 2010.5, xmax = 2016.5,
+           ymin = -Inf, ymax = Inf,
+           fill = "gray95", alpha = 0.5) +
+  annotate("rect",
+           xmin = 2016.5, xmax = 2017.5,
+           ymin = -Inf, ymax = Inf,
+           fill = "lightyellow", alpha = 0.5) +
+  
+  # Pre/Post labels
+  annotate("text", x = 2013.5, y = 38500,
+           label = "Pre-Intervention",
+           size = 3.2, color = "gray40",
+           fontface = "italic") +
+  annotate("text", x = 2017, y = 38500,
+           label = "Post",
+           size = 3.2, color = "gray40",
+           fontface = "italic") +
+  
+  # Main lines
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 3.5, shape = 21,
+             fill = "white", stroke = 1.5) +
+  
+  # Counterfactual line (2016 to 2017 only)
+  geom_line(data = counterfactual,
+            aes(x = year, y = mean_food),
+            linetype = "dashed",
+            color = "black",
+            linewidth = 1,
+            inherit.aes = FALSE) +
+  
+  # DiD gap arrow
+  geom_segment(
+    aes(x = 2017, xend = 2017,
+        y = cf_2017, yend = treat_2017),
+    color = "black",
+    linewidth = 0.8,
+    arrow = arrow(ends = "both",
+                  length = unit(0.2, "cm")),
+    inherit.aes = FALSE
+  ) +
+  
+  # DiD estimate label
+  annotate("text",
+           x = 2017.05,
+           y = (cf_2017 + treat_2017) / 2,
+           label = paste0("DiD = ₱", 
+                         format(round(treat_2017 - cf_2017, 0),
+                                big.mark = ",")),
+           hjust = 0,
+           size = 3.2,
+           color = "black",
+           fontface = "bold") +
+  
+  # Counterfactual label
+  annotate("text",
+           x = 2016.55,
+           y = cf_2017 - 800,
+           label = "Counterfactual",
+           hjust = 0,
+           size = 3,
+           color = "black",
+           fontface = "italic") +
+  
+  # Colors
+  scale_color_manual(
+    values = c("0" = "#E07B6A",
+               "1" = "#5B9BD5"),
+    labels = c("Non-4Ps", "4Ps")
+  ) +
+  
+  # Axis formatting
+  scale_x_continuous(
+    breaks = c(2011, 2013, 2014, 2016, 2017)
+  ) +
+  scale_y_continuous(
+    labels = comma_format(prefix = "₱"),
+    limits = c(25000, 40000)
+  ) +
+  
+  # Labels
+  labs(
+    x = "Survey Year",
+    y = "Weighted Mean Food Expenditure (₱)",
+    color = "Household Group",
+    title = "Food Expenditure Trends of 4Ps and Non-4Ps Households",
+    subtitle = "Region X, APIS 2011–2017 | Dashed line = counterfactual trend",
+    caption = "Source: APIS 2011–2017, Philippine Statistics Authority.\nNote: Weighted means using RFACT survey expansion factors."
+  ) +
+  
+  # Theme
+  theme_classic() +
+  theme(
+    plot.title = element_text(face = "bold",
+                              size = 12,
+                              hjust = 0),
+    plot.subtitle = element_text(size = 9,
+                                 color = "gray40",
+                                 hjust = 0),
+    plot.caption = element_text(size = 8,
+                                color = "gray50",
+                                hjust = 0),
+    axis.title = element_text(size = 11,
+                              face = "bold"),
+    axis.text = element_text(size = 10),
+    axis.line = element_line(color = "black",
+                             linewidth = 0.5),
+    legend.position = "right",
+    legend.title = element_text(face = "bold",
+                                size = 10),
+    legend.text = element_text(size = 10),
+    legend.background = element_rect(
+      fill = "white", color = "gray80"
+    ),
+    panel.grid.major.y = element_line(
+      color = "gray90", linewidth = 0.4
+    ),
+    panel.grid.major.x = element_blank(),
+    plot.margin = margin(15, 20, 15, 15)
+  )
+
+# Save
+ggsave("did_pretrends_plot.png",
+       width = 8, height = 5,
+       dpi = 300,
+       bg = "white")
+```
+
+## FINAL Exploratory Data Analysis + DiD + Robustness Check
+
+#Descriptive Statistics
+
+## PART 1: Data Description
+
+```{r}
+# Sample description
+table(combined5$year)
+
+# 2×2 DiD structure (2016–2017)
+did_sample <- combined5 %>% filter(year %in% c(2016, 2017))
+table(did_sample$fourps, did_sample$post)
+```
+
+## EDA
+
+## PART 2: Distributional Properties
+
+```{r}
+library(ggplot2)
+
+#manually construct, what is the range?????
+
+# FOOD distribution
+ggplot(combined5, aes(x = FOOD)) +
+  geom_histogram(bins = 50) +
+  labs(title = "Distribution of Food Expenditure")
+
+# TOINC
+ggplot(combined5, aes(x = TOINC)) +
+  geom_histogram(bins = 50) +
+  labs(title = "Distribution of Income")
+```
+
+```{r, echo=FALSE}
+library(ggplot2)
+library(scales)
+
+# FOOD histogram
+ggplot(combined5, aes(x = FOOD)) +
+  geom_histogram(bins = 50,
+                 fill = "#5B9BD5",
+                 color = "white",
+                 linewidth = 0.3) +
+  
+  # Mean and median lines
+  geom_vline(aes(xintercept = mean(FOOD, na.rm = TRUE)),
+             color = "#E07B6A",
+             linetype = "dashed",
+             linewidth = 0.9) +
+  geom_vline(aes(xintercept = median(FOOD, na.rm = TRUE)),
+             color = "darkgreen",
+             linetype = "dashed",
+             linewidth = 0.9) +
+  
+  # Mean and median labels
+  annotate("text",
+           x = mean(combined5$FOOD, na.rm = TRUE) + 8000,
+           y = 900,
+           label = paste0("Mean = ₱",
+                         format(round(mean(combined5$FOOD,
+                                         na.rm = TRUE), 0),
+                                big.mark = ",")),
+           color = "#E07B6A",
+           size = 3.2,
+           hjust = 0) +
+  annotate("text",
+           x = median(combined5$FOOD, na.rm = TRUE) + 8000,
+           y = 820,
+           label = paste0("Median = ₱",
+                         format(round(median(combined5$FOOD,
+                                           na.rm = TRUE), 0),
+                                big.mark = ",")),
+           color = "darkgreen",
+           size = 3.2,
+           hjust = 0) +
+  
+  # Axis formatting
+  scale_x_continuous(
+    labels = comma_format(prefix = "₱"),
+    breaks = seq(0, 500000, by = 100000)
+  ) +
+  scale_y_continuous(
+    labels = comma_format()
+  ) +
+  
+  # Labels
+  labs(
+    title = "Distribution of Household Food Expenditure",
+    subtitle = "Region X, APIS 2011–2017 (n = 3,995)",
+    x = "Annual Food Expenditure (₱)",
+    y = "Number of Households",
+    caption = "Note: Distribution is right-skewed with extreme values up to ₱476,060.\nSource: APIS 2011–2017, Philippine Statistics Authority."
+  ) +
+  
+  theme_classic() +
+  theme(
+    plot.title = element_text(face = "bold",
+                              size = 12,
+                              hjust = 0),
+    plot.subtitle = element_text(size = 9,
+                                 color = "gray40",
+                                 hjust = 0),
+    plot.caption = element_text(size = 8,
+                                color = "gray50",
+                                hjust = 0),
+    axis.title = element_text(size = 11,
+                              face = "bold"),
+    axis.text = element_text(size = 10),
+    axis.text.x = element_text(angle = 30,
+                               hjust = 1),
+    panel.grid.major.y = element_line(color = "gray90",
+                                      linewidth = 0.4),
+    panel.grid.major.x = element_blank(),
+    plot.margin = margin(15, 15, 15, 15)
+  )
+
+ggsave("food_distribution.png",
+       width = 7, height = 5,
+       dpi = 300, bg = "white")
+
+
+# TOINC histogram
+ggplot(combined5, aes(x = TOINC)) +
+  geom_histogram(bins = 50,
+                 fill = "#5B9BD5",
+                 color = "white",
+                 linewidth = 0.3) +
+  
+  # Mean and median lines
+  geom_vline(aes(xintercept = mean(TOINC, na.rm = TRUE)),
+             color = "#E07B6A",
+             linetype = "dashed",
+             linewidth = 0.9) +
+  geom_vline(aes(xintercept = median(TOINC, na.rm = TRUE)),
+             color = "darkgreen",
+             linetype = "dashed",
+             linewidth = 0.9) +
+  
+  # Mean and median labels
+  annotate("text",
+           x = mean(combined5$TOINC, na.rm = TRUE) + 50000,
+           y = 1500,
+           label = paste0("Mean = ₱",
+                         format(round(mean(combined5$TOINC,
+                                         na.rm = TRUE), 0),
+                                big.mark = ",")),
+           color = "#E07B6A",
+           size = 3.2,
+           hjust = 0) +
+  annotate("text",
+           x = median(combined5$TOINC, na.rm = TRUE) + 50000,
+           y = 1380,
+           label = paste0("Median = ₱",
+                         format(round(median(combined5$TOINC,
+                                           na.rm = TRUE), 0),
+                                big.mark = ",")),
+           color = "darkgreen",
+           size = 3.2,
+           hjust = 0) +
+  
+  # Axis formatting
+  scale_x_continuous(
+    labels = comma_format(prefix = "₱"),
+    breaks = seq(0, 5000000, by = 1000000)
+  ) +
+  scale_y_continuous(
+    labels = comma_format()
+  ) +
+  
+  # Labels
+  labs(
+    title = "Distribution of Household Total Income",
+    subtitle = "Region X, APIS 2011–2017 (n = 3,995)",
+    x = "Annual Total Income (₱)",
+    y = "Number of Households",
+    caption = "Note: Distribution is heavily right-skewed, justifying log transformation in regression.\nSource: APIS 2011–2017, Philippine Statistics Authority."
+  ) +
+  
+  theme_classic() +
+  theme(
+    plot.title = element_text(face = "bold",
+                              size = 12,
+                              hjust = 0),
+    plot.subtitle = element_text(size = 9,
+                                 color = "gray40",
+                                 hjust = 0),
+    plot.caption = element_text(size = 8,
+                                color = "gray50",
+                                hjust = 0),
+    axis.title = element_text(size = 11,
+                              face = "bold"),
+    axis.text = element_text(size = 10),
+    axis.text.x = element_text(angle = 30,
+                               hjust = 1),
+    panel.grid.major.y = element_line(color = "gray90",
+                                      linewidth = 0.4),
+    panel.grid.major.x = element_blank(),
+    plot.margin = margin(15, 15, 15, 15)
+  )
+
+ggsave("income_distribution.png",
+       width = 7, height = 5,
+       dpi = 300, bg = "white")
+
+#check if 5,000,000 is present in csv
+```
+
+## PART 3: Group Differences
+
+```{r}
+#OUTLIER DETECTION: BOXPLOT
+
+# Boxplot of FOOD by 4Ps status
+#ggplot(combined5, aes(x = factor(fourps), y = FOOD, color = factor(fourps))) +
+#  geom_boxplot() +
+#  labs(x = "4Ps Status", y = "Food Expenditure", title = "Distribution of Total Food Expenditure by 4Ps Status")
+
+# Boxplot of TOINC by 4Ps status
+#ggplot(combined5, aes(x = factor(fourps), y = TOINC, color = factor(fourps))) +
+#  geom_boxplot() +
+#  labs(x = "4Ps Status", y = "Total Income",
+#       title = "Distribution of Total Income by 4Ps Status")
+
+
+
+# Tells that both groups are statistically different and validates for controlling for them as covariates
+
+# Balance test (2016)
+pre_data <- combined5 %>% filter(year == 2016)
+t.test(FSIZE ~ fourps, data = pre_data)
+t.test(TOINC ~ fourps, data = pre_data)
+t.test(PUFEQ6G ~ fourps, data = pre_data)
+```
+
+## PART 4: Relationships Among Variables
+
+```{r}
+# Correlation
+combined5 %>%
+  select(FOOD, TOINC, FSIZE, PUFEQ6G) %>%
+  cor(use = "complete.obs")
+```
+
+## PART 5: DiD Assumption Checks
+
+## Parallel Trend Assumption
+
+### PRE-TREND ANALYSIS
+
+Graph:
+
+```{r}
+# Parallel trends plot
+trend_data <- combined5 %>%
+  group_by(year, fourps) %>%
+  summarise(
+    mean_food = weighted.mean(FOOD, RFACT, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+ggplot(trend_data,
+       aes(x = year, y = mean_food,
+           color = factor(fourps), group = fourps)) +
+  geom_line() +
+  geom_point() +
+  labs(
+    x = "Year",
+    y = "Weighted Mean Food Expenditure",
+    color = "Group",
+    title = "Food Expenditure Trends of 4Ps and Non-4Ps Households"
+  ) +
+  scale_color_discrete(labels = c("Non-4Ps", "4Ps")) +
+  theme_minimal() +
+  
+  
+  theme(
+    plot.title = element_text(size = 16, face = "bold"),   
+    axis.title = element_text(size = 14, face = "bold"),   
+    axis.text = element_text(size = 12),                   
+    legend.title = element_text(size = 13, face = "bold"), 
+    legend.text = element_text(size = 12)                  
+  )
+```
+
+```{r, echo=FALSE}
+library(ggplot2)
+library(scales)
+library(dplyr)
+
+# Data
+trend_data <- combined5 %>%
+  group_by(year, fourps) %>%
+  summarise(
+    mean_food = weighted.mean(FOOD, RFACT, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Plot
+ggplot(trend_data,
+       aes(x = year, y = mean_food,
+           color = factor(fourps),
+           group = factor(fourps))) +
+  
+  # ── Shading ──────────────────────────────────────
+  annotate("rect",
+           xmin = 2010.5, xmax = 2017.5,
+           ymin = -Inf,   ymax = Inf,
+           fill = "gray95", alpha = 0.6) +
+#  annotate("rect",
+#           xmin = 2016.5, xmax = 2017.5,
+#           ymin = -Inf,   ymax = Inf,
+#           fill = "lightyellow", alpha = 0.6) +
+
+  # ── Intervention line ─────────────────────────────
+#  geom_vline(xintercept = 2016.5,
+#             linetype = "dotted",
+#             color = "gray40",
+#             linewidth = 0.8) +
+
+  # ── Period labels ─────────────────────────────────
+  annotate("text",
+           x = 2013, y = 38500,
+           label = "Pre-Intervention",
+           size = 3.2, color = "gray40",
+           fontface = "italic") +
+  annotate("text",
+           x = 2017, y = 38500,
+           label = "Post",
+           size = 3.2, color = "gray40",
+           fontface = "italic") +
+
+  # ── Lines and points ──────────────────────────────
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 3.5,
+             shape = 21,
+             fill = "white",
+             stroke = 1.5) +
+
+  # ── Value labels on each point ────────────────────
+  geom_text(aes(label = paste0("₱",
+                               format(round(mean_food, 0),
+                                      big.mark = ","))),
+            vjust = -1.2,
+            size = 2.8,
+            show.legend = FALSE) +
+
+  # ── Colors ────────────────────────────────────────
+  scale_color_manual(
+    values = c("0" = "#E07B6A",
+               "1" = "#5B9BD5"),
+    labels = c("Non-4Ps (Control)",
+               "4Ps (Treated)")
+  ) +
+
+  # ── Axes ──────────────────────────────────────────
+  scale_x_continuous(
+    breaks = c(2011, 2013, 2014, 2016, 2017)
+  ) +
+  scale_y_continuous(
+    labels = comma_format(prefix = "₱"),
+    limits = c(25000, 40500),
+    breaks = seq(25000, 40000, by = 2500)
+  ) +
+
+  # ── Labels ────────────────────────────────────────
+  labs(
+    title    = "Parallel Trends in Food Expenditure: 4Ps vs Non-4Ps Households",
+    subtitle = "Region X, APIS 2011–2017 | Weighted by RFACT survey expansion factors",
+    x        = "Survey Year",
+    y        = "Weighted Mean Food Expenditure (₱)",
+    color    = "Household Group",
+    caption  = paste0(
+      "Note: Both groups exhibit broadly similar pre-intervention trends (2011–2016),\n",
+      "supporting the parallel trends assumption underlying the DiD estimator.\n",
+      "Source: APIS 2011–2017, Philippine Statistics Authority."
+    )
+  ) +
+
+  # ── Theme ─────────────────────────────────────────
+  theme_classic() +
+  theme(
+    plot.title    = element_text(face = "bold",
+                                 size = 12,
+                                 hjust = 0),
+    plot.subtitle = element_text(size = 9,
+                                 color = "gray40",
+                                 hjust = 0),
+    plot.caption  = element_text(size = 8,
+                                 color = "gray50",
+                                 hjust = 0),
+    axis.title    = element_text(size = 11,
+                                 face = "bold"),
+    axis.text     = element_text(size = 10),
+    legend.position    = "right",
+    legend.title       = element_text(face = "bold",
+                                      size = 10),
+    legend.text        = element_text(size = 10),
+    legend.background  = element_rect(fill = "white",
+                                      color = "gray80"),
+    panel.grid.major.y = element_line(color = "gray90",
+                                      linewidth = 0.4),
+    panel.grid.major.x = element_blank(),
+    plot.margin        = margin(15, 20, 15, 15)
+  )
+
+ggsave("parallel_trends_full.png",
+       width = 8, height = 5,
+       dpi = 300, bg = "white")
+```
+
+```{r, echo=FALSE}
+
+library(ggplot2)
+library(scales)
+library(dplyr)
+library(ggrepel)
+
+# Data
+trend_data <- combined5 %>%
+  group_by(year, fourps) %>%
+  summarise(
+    mean_food = weighted.mean(FOOD, RFACT, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Plot
+ggplot(trend_data,
+       aes(x = year, y = mean_food,
+           color = factor(fourps),
+           group = factor(fourps))) +
+  
+  # ── Shading ──────────────────────────────────────
+  annotate("rect",
+           xmin = 2010.5, xmax = 2017.5,
+           ymin = -Inf,   ymax = Inf,
+           fill = "gray95", alpha = 0.6) +
+
+  # ── Lines and points ──────────────────────────────
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 3.5,
+             shape = 21,
+             fill = "white",
+             stroke = 1.5) +
+
+  # ── Clean, Non-overlapping Value Labels ───────────
+  # Force labels to stack directly above/below the points
+  geom_text_repel(aes(label = paste0("₱", 
+                               format(round(mean_food, 0),
+                                      big.mark = ","))),
+                  size = 3.5,
+                  show.legend = FALSE,
+                  direction = "y",         
+                  nudge_y = 400,            
+                  box.padding = 0.5,       
+                  point.padding = 0.3,     
+                  force = 2) + 
+
+  # ── Colors ────────────────────────────────────────
+  scale_color_manual(
+    values = c("0" = "#E07B6A",
+               "1" = "#5B9BD5"),
+    labels = c("Non-4Ps (Control)",
+               "4Ps (Treated)")
+  ) +
+
+  # ── Axes ──────────────────────────────────────────
+  scale_x_continuous(
+    breaks = c(2011, 2013, 2014, 2016, 2017)
+  ) +
+  scale_y_continuous(
+    labels = comma_format(prefix = "₱"),
+    limits = c(25000, 43000),                
+    breaks = seq(25000, 40000, by = 2500)
+  ) +
+
+  # ── Period Labels Safely Anchored at the Top Edge ──
+  
+  annotate("text", x = 2013.5, y = Inf, label = "PRE-INTERVENTION", 
+           vjust = 2, size = 3.8, color = "gray40", fontface = "italic") +
+  annotate("text", x = 2017, y = Inf, label = "POST", 
+           vjust = 2, size = 3.8, color = "gray40", fontface = "italic") +
+
+  # ── Labels ────────────────────────────────────────
+  labs(
+    title    = "Parallel Trends in Food Expenditure: 4Ps vs Non-4Ps Households",
+    subtitle = "Region X, APIS 2011–2017 | Weighted by RFACT survey expansion factors",
+    x        = "Survey Year",
+    y        = "Weighted Mean Food Expenditure (₱)",
+    color    = "Household Group",
+    caption  = paste0(
+      "Note: Both groups exhibit broadly similar pre-intervention trends (2011–2016),\n",
+      "supporting the parallel trends assumption underlying the DiD estimator.\n",
+      "Source: APIS 2011–2017, Philippine Statistics Authority."
+    )
+  ) +
+
+  # ── Theme ─────────────────────────────────────────
+  theme_classic() +
+  theme(
+    # Titles & Captions
+    plot.title    = element_text(face = "bold", size = 15, hjust = 0),
+    plot.subtitle = element_text(size = 11, color = "gray40", hjust = 0, margin = margin(b = 15)),
+    plot.caption  = element_text(size = 9, color = "gray50", hjust = 0),
+    
+    # Axes Labels & Values
+    axis.title    = element_text(size = 13, face = "bold"),
+    axis.text     = element_text(size = 11),
+    
+    # Legend Elements
+    legend.position    = "right",
+    legend.title       = element_text(face = "bold", size = 11),
+    legend.text        = element_text(size = 11),
+    legend.background  = element_rect(fill = "white", color = "gray80"),
+    
+    # Gridlines and Background
+    panel.grid.major.y = element_line(color = "gray90", linewidth = 0.4),
+    panel.grid.major.x = element_blank(),
+    plot.margin        = margin(15, 20, 15, 15)
+  )
+
+ggsave("parallel_trends_full.png",
+       width = 8, height = 5,
+       dpi = 300, bg = "white")
+```
+
+### PLACEBO TEST (PLACEBO DiD)
+
+```{r}
+person14_hhh <- person14 %>%
+  group_by(ID) %>%
+  summarise(fourps = as.integer(any(PPS01 == 1, na.rm = TRUE)), .groups = "drop")
+
+hhh_2014 <- hh14 %>%
+  left_join(person14_hhh, by = "ID") %>%
+  mutate(
+    fourps = ifelse(is.na(fourps), 0, fourps),
+    post = 0,
+    year = 2014
+  ) %>%
+  rename(PUFEQ6G = PUFFQ6G) %>%
+  rename(PUFEQ5 = PUFFQ5) %>%
+  filter(REGN == 10) 
+
+person16_hhh <- person16 %>%
+  group_by(ID) %>%
+  summarise(fourps = as.integer(any(PPS01 == 1, na.rm = TRUE)), .groups = "drop")
+
+hhh_2016 <- hh16 %>%
+  left_join(person16_hhh, by = "ID") %>%
+  mutate(
+    fourps = ifelse(is.na(fourps), 0, fourps),
+    post = 1,
+    year = 2016
+  ) %>%
+  filter(REGN == 10)
+
+person17_hhh <- person17 %>%
+  group_by(ID) %>%
+  summarise(fourps = as.integer(any(PPS01 == 1, na.rm = TRUE)), .groups = "drop")
+
+hhh_2017 <- hh17 %>%
+  left_join(person17_hhh, by = "ID") %>%
+  mutate(
+    fourps = ifelse(is.na(fourps), 0, fourps),
+    year = 2017
+  ) %>%
+  rename(REGN = REGO) %>%
+  filter(REGN == 10)
+
+hhh_2014$year <- 2014
+hhh_2016$year <- 2016
+hhh_2017$year <- 2017
+
+hhh_2014 <- hhh_2014 %>% mutate(across(everything(), as.character))
+hhh_2016 <- hhh_2016 %>% mutate(across(everything(), as.character))
+hhh_2017 <- hhh_2017 %>% mutate(across(everything(), as.character))
+
+combinedd <- bind_rows(hhh_2014, hhh_2016, hhh_2017)
+
+combinedd <- subset(combinedd, REGN == 10)
+library(dplyr)
+combinedd <- combinedd %>%
+  filter(REGN == 10)
+with(combinedd, table(fourps, post))
+
+combinedd <- combinedd %>%
+  mutate(
+    fourps = as.numeric(fourps),
+    post = as.numeric(post),
+    FOOD = as.numeric(FOOD),
+    year = as.numeric(year),
+    REGN = as.factor(REGN),
+    RFACT = as.numeric(RFACT),
+    FSIZE = as.numeric(FSIZE),
+    PUFEQ5 = as.numeric(PUFEQ5),
+    PUFEQ6G = as.numeric(PUFEQ6G),
+    TOINC = as.numeric(TOINC),
+    PUFH04_SEX = as.numeric(PUFH04_SEX),
+    PUFH05_AGE = as.numeric(PUFH05_AGE)
+  )
+
+trend_did_data <- combinedd %>%
+  filter(year %in% c(2014, 2016)) %>%
+  filter(!is.na(FOOD), !is.na(fourps), !is.na(post), !is.na(year), !is.na(REGN), !is.na(RFACT), !is.na(FSIZE), !is.na(PUFEQ5), !is.na(PUFEQ6G), !is.na(TOINC), !is.na(PUFH04_SEX), !is.na(PUFH05_AGE))
+```
+
+#### DiD 2014 & 2016
+
+```{r}
+did_model_ww <- lm(
+  FOOD ~ fourps * post + FSIZE + log(TOINC) + PUFEQ6G ,
+  data = trend_did_data,
+  weights = RFACT
+)
+summary(did_model_ww)
+```
+
+### EVENT-STUDY MODEL (Event-Study Regression)
+
+```{r}
+hh11 <- suppressMessages(read_csv("APIS PUF 2011 Household.CSV"))
+person11 <- read_csv("APIS PUF 2011 Person.CSV")
+
+#2011
+person11_hhh <- person11 %>%
+  rename(ID = PHHNUM) %>%
+  rename(PPS01 = PPS04) %>%
+  group_by(ID) %>%
+  summarise(fourps = as.integer(any(PPS01 == 1, na.rm = TRUE)), .groups = "drop")
+
+hhh_2011 <- hh11 %>%
+  rename(ID = PHHNUM) %>%
+  left_join(person11_hhh, by = "ID") %>%
+  mutate(
+    fourps = ifelse(is.na(fourps), 0, fourps),
+    year = 2011
+  ) %>%
+  rename(REGN = PREG) %>%
+  rename(FSIZE = PUFSIZE) %>%
+  rename(RFACT = HHWGT) %>%
+  rename(PUFEQ5 = PUFFQ5) %>%
+  rename(PUFEQ6G = PUFFQ6G) %>%
+  rename(FOOD = PUFFOOD) %>%
+  rename(TOINC = PUFTOTINC) %>%
+  rename(PUFH12_HGC = PUFH14_HGC) %>%
+  filter(REGN == 10)
+
+hh13 <- read_csv("APIS PUF 2013 Household.CSV")
+person13 <- read_csv("APIS PUF 2013 Person.CSV")
+
+#2013
+person13_hhh <- person13 %>%
+  rename(ID = SEQ) %>%
+  group_by(ID) %>%
+  summarise(fourps = as.integer(any(PPS01 == 1, na.rm = TRUE)), .groups = "drop")
+
+hhh_2013 <- hh13 %>%
+  rename(ID = SEQ) %>%
+  left_join(person13_hhh, by = "ID") %>%
+  mutate(
+    fourps = ifelse(is.na(fourps), 0, fourps),
+    year = 2013
+  ) %>%
+  rename(REGN = REGION) %>%
+  rename(FOOD = T_FOOD) %>%
+  rename(PUFH12_HGC = PUFH14_HGC) %>%
+  filter(REGN == 10)
+
+#2014
+person14_hhh <- person14 %>%
+  group_by(ID) %>%
+  summarise(fourps = as.integer(any(PPS01 == 1, na.rm = TRUE)), .groups = "drop")
+
+hhh_2014 <- hh14 %>%
+  left_join(person14_hhh, by = "ID") %>%
+  mutate(
+    fourps = ifelse(is.na(fourps), 0, fourps),
+    year = 2014
+  ) %>%
+  rename(PUFEQ6G = PUFFQ6G) %>%
+  rename(PUFEQ5 = PUFFQ5) %>%
+  filter(REGN == 10) 
+
+#2016
+person16_hhh <- person16 %>%
+  group_by(ID) %>%
+  summarise(fourps = as.integer(any(PPS01 == 1, na.rm = TRUE)), .groups = "drop")
+
+hhh_2016 <- hh16 %>%
+  left_join(person16_hhh, by = "ID") %>%
+  mutate(
+    fourps = ifelse(is.na(fourps), 0, fourps),
+    post = 0,
+    year = 2016
+  ) %>%
+  filter(REGN == 10)
+
+#2017
+person17_hhh <- person17 %>%
+  group_by(ID) %>%
+  summarise(fourps = as.integer(any(PPS01 == 1, na.rm = TRUE)), .groups = "drop")
+
+hhh_2017 <- hh17 %>%
+  left_join(person17_hhh, by = "ID") %>%
+  mutate(
+    fourps = ifelse(is.na(fourps), 0, fourps),
+    post = 1,
+    year = 2017
+  ) %>%
+  rename(REGN = REGO) %>%
+  filter(REGN == 10)
+
+hhh_2011$year <- 2011
+hhh_2013$year <- 2013
+hhh_2014$year <- 2014
+hhh_2016$year <- 2016
+hhh_2017$year <- 2017
+
+hhh_2011 <- hhh_2011 %>% mutate(across(everything(), as.character))
+hhh_2013 <- hhh_2013 %>% mutate(across(everything(), as.character))
+hhh_2014 <- hhh_2014 %>% mutate(across(everything(), as.character))
+hhh_2016 <- hhh_2016 %>% mutate(across(everything(), as.character))
+hhh_2017 <- hhh_2017 %>% mutate(across(everything(), as.character))
+
+combined5 <- bind_rows(hhh_2011, hhh_2013, hhh_2014, hhh_2016, hhh_2017)
+
+combined5 <- subset(combined5, REGN == 10)
+library(dplyr)
+combined5 <- combined5 %>%
+  filter(REGN == 10)
+with(combined5, table(fourps, post))
+
+combined5 <- combined5 %>%
+  mutate(
+    fourps = as.numeric(fourps),
+    post = as.numeric(post),
+    FOOD = as.numeric(FOOD),
+    year = as.numeric(year),
+    REGN = as.factor(REGN),
+    RFACT = as.numeric(RFACT),
+    FSIZE = as.numeric(FSIZE),
+    PUFEQ5 = as.numeric(PUFEQ5),
+    PUFEQ6G = as.numeric(PUFEQ6G),
+    TOINC = as.numeric(TOINC),
+    PUFH04_SEX = as.numeric(PUFH04_SEX),
+    PUFH05_AGE = as.numeric(PUFH05_AGE)
+  )
+```
+
+#### All 5 survey years
+
+```{r}
+combined555 <- combined5 %>%
+  filter(year %in% c(2011, 2013, 2014, 2016, 2017)) %>%
+  mutate(year = factor(year))
+
+combined555$year <- relevel(combined555$year, ref = "2016")
+```
+
+```{r}
+event_model_all <- lm(
+  FOOD ~ fourps * year +
+         FSIZE +
+         log(TOINC) +
+         PUFEQ6G,
+  data = combined555,
+  weights = RFACT
+)
+
+summary(event_model_all) 
+```
+
+#### Graph
+
+```{r}
+#Extract coefficients:
+library(broom)
+
+event_results <- tidy(event_model_all)
+
+#Filter interaction terms:
+event_results <- event_results %>%
+  filter(grepl("fourps:year", term))
+
+#Create a year variable:
+event_results$year <- c(2011, 2013, 2014,  2017)
+
+#Plot the Event-Study
+library(ggplot2)
+
+# Plot the Event-Study at 10% significance level (90% CI)
+ggplot(event_results, aes(x = year, y = estimate)) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = estimate - 1.645*std.error, 
+                    ymax = estimate + 1.645*std.error),
+                width = 0.2) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(
+    x = "Year",
+    y = "Treatment Effect on Food Expenditure",
+    title = "Event Study: Effect of Rice Subsidy on Food Expenditure"
+  ) +
+  theme_minimal()
+```
+
+```{r, echo=FALSE}
+library(ggplot2)
+library(scales)
+library(broom)
+library(dplyr)
+
+# Extract and prepare results
+event_results <- tidy(event_model_all) %>%
+  filter(grepl("fourps:year", term)) %>%
+  mutate(
+    year = c(2011, 2013, 2014, 2017),
+    # Label pre vs post
+    period = ifelse(year == 2017, 
+                    "Post-Intervention",
+                    "Pre-Intervention"),
+    # 90% CI bounds
+    ci_low  = estimate - 1.645 * std.error,
+    ci_high = estimate + 1.645 * std.error,
+    # Significance flag
+    significant = ifelse(ci_low > 0 | ci_high < 0,
+                         "Significant", 
+                         "Not Significant")
+  )
+
+# Plot
+ggplot(event_results, 
+       aes(x = year, y = estimate)) +
+  
+  # Pre/post shading
+  annotate("rect",
+           xmin = 2010.5, xmax = 2016.5,
+           ymin = -Inf, ymax = Inf,
+           fill = "gray95", alpha = 0.6) +
+  annotate("rect",
+           xmin = 2016.5, xmax = 2017.5,
+           ymin = -Inf, ymax = Inf,
+           fill = "lightyellow", alpha = 0.6) +
+  
+  # Intervention line
+  geom_vline(xintercept = 2016.5,
+             linetype = "dotted",
+             color = "gray40",
+             linewidth = 0.8) +
+  
+  # Zero reference line
+  geom_hline(yintercept = 0,
+             linetype = "dashed",
+             color = "gray30",
+             linewidth = 0.8) +
+  
+  # Pre/post period labels
+  annotate("text",
+           x = 2013, y = max(event_results$ci_high) * 0.97,
+           label = "Pre-Intervention",
+           size = 3.2, color = "gray40",
+           fontface = "italic") +
+  annotate("text",
+           x = 2017, y = max(event_results$ci_high) * 0.97,
+           label = "Post",
+           size = 3.2, color = "gray40",
+           fontface = "italic") +
+  
+  # Reference year label
+  annotate("text",
+           x = 2016, 
+           y = min(event_results$ci_low) * 0.85,
+           label = "Reference\nYear (2016)",
+           size = 2.8, color = "gray50",
+           fontface = "italic") +
+  
+  # Reference year point
+  annotate("point",
+           x = 2016, y = 0,
+           size = 3.5, shape = 21,
+           fill = "white", color = "gray50",
+           stroke = 1.2) +
+  
+  # Confidence intervals
+  geom_errorbar(aes(ymin = ci_low,
+                    ymax = ci_high,
+                    color = significant),
+                width = 0.3,
+                linewidth = 0.9) +
+  
+  # Points colored by significance
+  geom_point(aes(color = significant,
+                 fill = significant),
+             size = 4,
+             shape = 21,
+             stroke = 1.5) +
+  
+  # Colors
+  scale_color_manual(
+    values = c("Significant" = "#E07B6A",
+               "Not Significant" = "#5B9BD5")
+  ) +
+  scale_fill_manual(
+    values = c("Significant" = "#E07B6A",
+               "Not Significant" = "#5B9BD5")
+  ) +
+  
+  # Axis formatting
+  scale_x_continuous(
+    breaks = c(2011, 2013, 2014, 2016, 2017),
+    labels = c("2011", "2013", "2014",
+               "2016\n(Ref)", "2017\n(Post)")
+  ) +
+  scale_y_continuous(
+    labels = comma_format(prefix = "₱")
+  ) +
+  
+  # Labels
+  labs(
+    title = "Event Study: Effect of Rice Subsidy on Food Expenditure",
+    subtitle = "Region X | Reference year: 2016 | 90% confidence intervals shown",
+    x = "Survey Year",
+    y = "Treatment Effect on Food Expenditure (₱)",
+    color = "Statistical Significance",
+    fill  = "Statistical Significance",
+    caption = "Note: Pre-intervention estimates (2011, 2013, 2014) not significantly different from zero\nsupport the parallel trends assumption. Post-intervention estimate (2017) shows positive effect.\nSource: APIS 2011–2017, Philippine Statistics Authority."
+  ) +
+  
+  theme_classic() +
+  theme(
+    plot.title = element_text(face = "bold",
+                              size = 12,
+                              hjust = 0),
+    plot.subtitle = element_text(size = 9,
+                                 color = "gray40",
+                                 hjust = 0),
+    plot.caption = element_text(size = 8,
+                                color = "gray50",
+                                hjust = 0),
+    axis.title = element_text(size = 11,
+                              face = "bold"),
+    axis.text = element_text(size = 10),
+    legend.position = "bottom",
+    legend.title = element_text(face = "bold",
+                                size = 10),
+    legend.text = element_text(size = 10),
+    legend.background = element_rect(
+      fill = "white", color = "gray80"),
+    panel.grid.major.y = element_line(color = "gray90",
+                                      linewidth = 0.4),
+    panel.grid.major.x = element_blank(),
+    plot.margin = margin(15, 20, 15, 15)
+  )
+
+ggsave("event_study.png",
+       width = 8, height = 5,
+       dpi = 300, bg = "white")
+```
+
+## PART 6: DiD Estimation
+
+```{r}
+# Basic DiD
+did_basic <- lm(FOOD ~ fourps * post,
+                data = did_sample)
+#summary(did_basic)
+
+# With controls
+did_controls <- lm(
+  FOOD ~ fourps * post + FSIZE + log(TOINC) + PUFEQ6G,
+  data = did_sample
+)
+#summary(did_controls)
+
+# Weighted
+did_weighted <- lm(
+  FOOD ~ fourps * post + FSIZE + log(TOINC) + PUFEQ6G,
+  data = did_sample,
+  weights = RFACT
+)
+summary(did_weighted)
+
+# Heteroskedasticity test
+library(lmtest)
+bptest(did_weighted)
+#did_log <- lm(
+#  log(FOOD) ~ fourps * post + FSIZE + log(TOINC) + PUFEQ6G,
+#  data = did_sample,
+#  weights = RFACT)
+#library(lmtest)
+#bptest(did_log)
+
+# Robust SE
+library(sandwich)
+coeftest(did_weighted, vcov = vcovHC(did_weighted, type = "HC1"))
+#library(sandwich)
+#coeftest(did_log, vcov = vcovHC(did_log, type = "HC1"))
+
+# ROBUST DiD MODEL for Reporting
+#did_robust <- coeftest(did_weighted, vcov = vcovHC(did_weighted, type = "HC1"))
+
+#did_data$resid_raw <- residuals(did_weighted)
+#did_data$fitted_raw <- fitted(did_weighted)
+
+#ggplot(did_data, aes(x = fitted_raw, y = resid_raw)) +
+#  geom_point(alpha = 0.3) +
+#  geom_hline(yintercept = 0, linetype = "dashed") +
+#  labs(
+#    title = "Residuals vs Fitted Values: Raw FOOD Model",
+#    x = "Fitted Values",
+#    y = "Residuals")
+```
+
+## PART 7: Robustness Checks
+
+```{r}
+# VIF
+library(car)
+vif(did_weighted)
+
+# Winsorize FOOD
+library(DescTools)
+q_low  <- quantile(did_sample$FOOD, 0.01, na.rm = TRUE)
+q_high <- quantile(did_sample$FOOD, 0.99, na.rm = TRUE)
+did_sample$FOOD_w <- pmin(pmax(did_sample$FOOD, q_low), q_high)
+did_winsor <- lm(
+  FOOD_w ~ fourps * post + FSIZE + log(TOINC) + PUFEQ6G,
+  data = did_sample,
+  weights = RFACT)
+summary(did_winsor)
+coeftest(did_winsor, vcov = vcovHC(did_winsor, type = "HC1"))
+
+# Log outcome
+#did_log <- lm(
+#  log(FOOD) ~ fourps * post + FSIZE + log(TOINC) + PUFEQ6G,
+#  data = did_sample,
+#  weights = RFACT)
+#summary(did_log)
+
+```
+
+## SENSITIVITY ANALYSIS
+
+### Robustness Value
+
+```{r}
+# ============================================================
+# ROBUSTNESS VALUE ANALYSIS
+# Rice Subsidy (2017) — APIS Region X
+# Covariates: fourps:post, FSIZE, log(TOINC), PUFEQ6G
+# ============================================================
+
+library(sensemakr)
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+
+# ============================================================
+# SECTION 1: sensemakr — Model 1 and 2
+# ============================================================
+
+# ── Model 1: Final weighted DiD (main model) ────────────────
+sens_weighted <- sensemakr(
+  model                = did_weighted,
+  treatment            = "fourps:post",
+  benchmark_covariates = c("FSIZE", "log(TOINC)", "PUFEQ6G"),
+  kd    = 1,   # benchmark at 1× each covariate's R² with treatment
+  ky    = 1,   # benchmark at 1× each covariate's R² with outcome
+  q     = 1,   # test whether effect is reduced to zero
+  alpha = 0.05,
+  reduce = TRUE
+)
+ESV_weighted <- partial_r2(did_weighted, covariates = "fourps:post")
+summary(sens_weighted)
+summary(ESV_weighted)
+plot(sens_weighted)
+plot(sens_weighted, sensitivity.of = "t-value")
+
+
+
+# ── Model 2: Basic DiD (no controls, no weights) ────────────
+sens_basic <- sensemakr(
+  model     = did_basic,
+  treatment = "fourps:post",
+  kd    = 1,
+  ky    = 1,
+  q     = 1,
+  alpha = 0.05,
+  reduce = TRUE
+)
+ESV_basic <- partial_r2(did_basic, covariates = "fourps:post")
+summary(sens_basic)
+summary(ESV_basic)
+plot(sens_basic)
+plot(sens_basic, sensitivity.of = "t-value")
+
+```
+
+```{r}
+# ── Model 1 Plot Adjustments ──────────────────────────────────
+# 1. Expand the X and Y plot limits slightly so edge labels don't get cut off
+# 2. Use 'pos' or 'offset' rules if custom positioning is needed, or change label names
+plot(sens_weighted, 
+     lim = 0.4,             # Manually forces the R² bounds to expand/shrink for breathing room
+     label.font = 2,        # Bold labels
+     cex.lab = 0.8)         # Slightly shrink label text size to prevent overlap
+
+plot(sens_weighted, 
+     sensitivity.of = "t-value",
+     lim = 0.4,
+     cex.lab = 0.8)
+
+
+# ── Model 2 Plot Adjustments ──────────────────────────────────
+plot(sens_basic, 
+     lim = 0.4,
+     cex.lab = 0.8)
+
+plot(sens_basic, 
+     sensitivity.of = "t-value",
+     lim = 0.4,
+     cex.lab = 0.8)
+```
+
+```{r}
+# ============================================================
+# SECTION 3: Extract sensemakr RV for comparison
+# ============================================================
+
+extract_sensemakr_rv <- function(sens_obj,
+                                 model_label,
+                                 treatment_name = "fourps:post",
+                                 bench_covariates = character(0)) {
+  
+  # Convert sensitivity stats safely
+  stats <- as.data.frame(sens_obj$sensitivity_stats)
+  
+  # Main RV for treatment: point estimate
+  rv_treat_point <- if ("rv_q" %in% names(stats)) {
+    as.numeric(stats[["rv_q"]][1])
+  } else {
+    NA_real_
+  }
+  
+  # Main RV for treatment: statistical significance
+  rv_treat_sig <- if ("rva_q" %in% names(stats)) {
+    as.numeric(stats[["rva_q"]][1])
+  } else {
+    NA_real_
+  }
+  
+  rows <- data.frame(
+    model             = model_label,
+    covariate         = treatment_name,
+    RV_point_estimate = round(rv_treat_point, 6),
+    RV_stat_sig       = round(rv_treat_sig, 6)
+  )
+  
+  # Benchmark RVs from bounds table
+  if (length(bench_covariates) > 0 &&
+      !is.null(sens_obj$bounds) &&
+      nrow(as.data.frame(sens_obj$bounds)) > 0) {
+    
+    bounds <- as.data.frame(sens_obj$bounds)
+    
+    for (cov in bench_covariates) {
+      
+      row_name <- paste0("1x ", cov)
+      
+      matched_rows <- bounds[
+        bounds$bound_label == row_name,
+        ,
+        drop = FALSE
+      ]
+      
+      if (nrow(matched_rows) > 0) {
+        
+        rv_cov_point <- if ("rv_q" %in% names(matched_rows)) {
+          as.numeric(matched_rows[["rv_q"]][1])
+        } else {
+          NA_real_
+        }
+        
+        rv_cov_sig <- if ("rva_q" %in% names(matched_rows)) {
+          as.numeric(matched_rows[["rva_q"]][1])
+        } else {
+          NA_real_
+        }
+        
+        rows <- bind_rows(
+          rows,
+          data.frame(
+            model             = model_label,
+            covariate         = cov,
+            RV_point_estimate = round(rv_cov_point, 6),
+            RV_stat_sig       = round(rv_cov_sig, 6)
+          )
+        )
+      }
+    }
+  }
+  
+  return(rows)
+}
+
+#bench_covs <- c("FSIZE", "log(TOINC)", "PUFEQ6G")
+
+sens_rv_weighted <- extract_sensemakr_rv(
+  sens_weighted,
+  "Weighted DiD (Final)",
+  treatment_name = "fourps:post",
+#  bench_covariates = bench_covs
+)
+
+sens_rv_basic <- extract_sensemakr_rv(
+  sens_basic,
+  "Basic DiD",
+  treatment_name = "fourps:post"
+)
+
+
+sensemakr_rv_all <- bind_rows(
+  sens_rv_weighted,
+  sens_rv_basic
+)
+
+sensemakr_rv_all
+
+
+```
